@@ -15,7 +15,6 @@ jobs:
     strategy:
       matrix:
         target: [arm64, x86_64]
-      fail-fast: false
     
     steps:
     - name: Maximize build space
