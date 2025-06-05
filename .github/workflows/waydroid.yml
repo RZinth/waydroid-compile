@@ -1,0 +1,103 @@
+name: Build Waydroid Images
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    
+    strategy:
+      matrix:
+        target: [arm64, x86_64]
+      fail-fast: false
+    
+    steps:
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 5120
+        swap-size-mb: 1024
+        remove-dotnet: 'true'
+        remove-android: 'true'
+        remove-haskell: 'true'
+        remove-codeql: 'true'
+        remove-docker-images: 'true'
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python-is-python3 repo libwxgtk3.0-gtk3-dev libncurses5
+        sudo apt-get install -y python3-pip
+        pip3 install pycryptodome
+        
+    - name: Set up JDK 11
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+        
+    - name: Set git configurations
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+    - name: Initialize repo
+      run: |
+        mkdir -p /home/runner/work/waydroid-build
+        cd /home/runner/work/waydroid-build
+        repo init -u https://github.com/LineageOS/android.git -b lineage-22.2 --git-lfs
+        repo sync build/make -j$(nproc)
+
+    - name: Get Waydroid manifest
+      run: |
+        cd /home/runner/work/waydroid-build
+        wget -O - https://raw.githubusercontent.com/waydroid/android_vendor_waydroid/lineage-22.0/manifest_scripts/generate-manifest.sh | bash
+
+    - name: Sync repositories
+      run: |
+        cd /home/runner/work/waydroid-build
+        repo sync -j$(nproc)
+
+    - name: Set up build environment
+      run: |
+        cd /home/runner/work/waydroid-build
+        source build/envsetup.sh
+        
+    - name: Apply Waydroid patches
+      run: |
+        cd /home/runner/work/waydroid-build
+        source build/envsetup.sh
+        apply-waydroid-patches
+        
+    - name: Build Waydroid ${{ matrix.target }}
+      run: |
+        cd /home/runner/work/waydroid-build
+        source build/envsetup.sh
+        lunch lineage_waydroid_${{ matrix.target }}-userdebug
+        make systemimage -j$(nproc)
+        make vendorimage -j$(nproc)
+        
+    - name: Convert sparse images to raw images
+      run: |
+        cd /home/runner/work/waydroid-build
+        OUT=$(cd out/target/product/waydroid_${{ matrix.target }} && pwd)
+        simg2img $OUT/system.img $OUT/system_raw.img
+        simg2img $OUT/vendor.img $OUT/vendor_raw.img
+        
+    - name: Upload system image
+      uses: actions/upload-artifact@v3
+      with:
+        name: system-${{ matrix.target }}.img
+        path: /home/runner/work/waydroid-build/out/target/product/waydroid_${{ matrix.target }}/system_raw.img
+        
+    - name: Upload vendor image
+      uses: actions/upload-artifact@v3
+      with:
+        name: vendor-${{ matrix.target }}.img
+        path: /home/runner/work/waydroid-build/out/target/product/waydroid_${{ matrix.target }}/vendor_raw.img
